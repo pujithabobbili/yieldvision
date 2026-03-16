@@ -1,7 +1,7 @@
 // src/hooks/useApi.js
 import { useState, useEffect, useCallback } from "react";
 
-const BASE_URL = "http://localhost:8000";
+const BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
 export function useApi(endpoint, params = {}) {
   const [data, setData] = useState(null);
