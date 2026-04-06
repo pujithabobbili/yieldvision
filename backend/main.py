@@ -1,10 +1,14 @@
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional, List
+from pydantic import BaseModel
 import random
 import math
 from datetime import datetime, timedelta
 import numpy as np
+import joblib
+import json
+from pathlib import Path
 
 app = FastAPI(title="Semiconductor Yield Analytics API", version="1.0.0")
 
@@ -16,6 +20,51 @@ app.add_middleware(
 )
 
 random.seed(42)
+
+# ─── ML Model Loading ─────────────────────────────────────────────────────────
+
+ML_MODEL = None
+ML_METRICS = None
+SELECTED_FEATURES = None
+
+def load_ml_model():
+    """Load the trained yield prediction model at startup."""
+    global ML_MODEL, ML_METRICS, SELECTED_FEATURES
+    
+    model_path = Path("yield_model.pkl")
+    metrics_path = Path("model_metrics.json")
+    features_path = Path("selected_features.json")
+    
+    if model_path.exists() and metrics_path.exists() and features_path.exists():
+        try:
+            ML_MODEL = joblib.load(model_path)
+            with open(metrics_path, 'r') as f:
+                ML_METRICS = json.load(f)
+            with open(features_path, 'r') as f:
+                SELECTED_FEATURES = json.load(f)
+            print("✓ ML model loaded successfully")
+            print(f"  - ROC-AUC: {ML_METRICS['roc_auc']:.4f}")
+            print(f"  - Features: {ML_METRICS['n_features']}")
+        except Exception as e:
+            print(f"⚠ Error loading ML model: {e}")
+            ML_MODEL = None
+    else:
+        print("⚠ ML model not found. Run 'python train_model.py' to train the model.")
+
+@app.on_event("startup")
+async def startup_event():
+    load_ml_model()
+
+# ─── Pydantic Models ──────────────────────────────────────────────────────────
+
+class PredictionRequest(BaseModel):
+    sensors: List[float]
+
+class PredictionResponse(BaseModel):
+    prediction: str
+    failure_probability: float
+    confidence: float
+    top_features: List[dict]
 
 PRODUCTS = ["KLA-7000", "KLA-9200", "KLA-X1", "KLA-EDGE"]
 LOTS = [f"LOT-{str(i).zfill(4)}" for i in range(1001, 1025)]
@@ -195,3 +244,112 @@ def get_products():
 @app.api_route("/health", methods=["GET", "HEAD"])
 def health():
     return {"status": "ok", "timestamp": datetime.now().isoformat()}
+
+
+# ─── ML Prediction Endpoints ──────────────────────────────────────────────────
+
+@app.get("/api/model-metrics")
+def get_model_metrics():
+    """Return ML model performance metrics and curve data."""
+    if ML_MODEL is None or ML_METRICS is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Model not trained yet. Run train_model.py first."
+        )
+    
+    return {
+        "roc_auc": ML_METRICS["roc_auc"],
+        "pr_auc": ML_METRICS["pr_auc"],
+        "roc_curve": ML_METRICS["roc_curve"],
+        "pr_curve": ML_METRICS["pr_curve"],
+        "model_info": {
+            "n_features": ML_METRICS["n_features"],
+            "n_train_samples": ML_METRICS["n_train_samples"],
+            "failure_rate": ML_METRICS["failure_rate"]
+        }
+    }
+
+
+@app.post("/api/predict")
+def predict_yield(request: PredictionRequest):
+    """Predict yield failure for given sensor readings."""
+    if ML_MODEL is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Model not trained yet. Run train_model.py first."
+        )
+    
+    # Validate input
+    if len(request.sensors) != 590:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Expected 590 sensor values, got {len(request.sensors)}"
+        )
+    
+    # Prepare input
+    X_input = np.array(request.sensors).reshape(1, -1)
+    
+    # Apply preprocessing pipeline
+    X_imputed = ML_MODEL['imputer'].transform(X_input)
+    X_selected = ML_MODEL['var_selector'].transform(X_imputed)
+    X_scaled = ML_MODEL['scaler'].transform(X_selected)
+    
+    # Get prediction
+    failure_prob = ML_MODEL['model'].predict_proba(X_scaled)[0, 1]
+    prediction = "FAIL" if failure_prob >= 0.5 else "PASS"
+    confidence = max(failure_prob, 1 - failure_prob)
+    
+    # Get feature importances for top contributing features
+    feature_importances = ML_MODEL['feature_importances']
+    selected_feature_indices = SELECTED_FEATURES
+    
+    # Map back to original feature indices and get their values
+    feature_contributions = []
+    for i, importance in enumerate(feature_importances):
+        original_idx = selected_feature_indices[i]
+        feature_contributions.append({
+            "feature_index": original_idx,
+            "importance": float(importance),
+            "value": float(request.sensors[original_idx])
+        })
+    
+    # Sort by importance and take top 10
+    top_features = sorted(feature_contributions, key=lambda x: x["importance"], reverse=True)[:10]
+    
+    return {
+        "prediction": prediction,
+        "failure_probability": round(float(failure_prob), 4),
+        "confidence": round(float(confidence), 4),
+        "top_features": top_features
+    }
+
+
+@app.get("/api/predict-sample")
+def predict_sample():
+    """Generate a random realistic sensor reading and return prediction (for demo)."""
+    if ML_MODEL is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Model not trained yet. Run train_model.py first."
+        )
+    
+    # Generate realistic sensor readings based on typical semiconductor sensor ranges
+    # Using a mix of normal distributions with occasional outliers
+    sensors = []
+    for i in range(590):
+        # Most sensors follow normal distribution
+        if random.random() < 0.9:
+            value = random.gauss(0, 1)  # Normalized sensor value
+        else:
+            # Occasional outliers that might indicate issues
+            value = random.gauss(0, 3)
+        sensors.append(value)
+    
+    # Add some NaN values to simulate real-world missing data (5% chance per sensor)
+    for i in range(590):
+        if random.random() < 0.05:
+            sensors[i] = float('nan')
+    
+    # Use the predict endpoint logic
+    request = PredictionRequest(sensors=sensors)
+    return predict_yield(request)

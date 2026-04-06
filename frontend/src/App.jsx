@@ -4,6 +4,7 @@ import YieldTrend from "./components/YieldTrend";
 import LotTable from "./components/LotTable";
 import WaferMap from "./components/WaferMap";
 import DefectAnalysis from "./components/DefectAnalysis";
+import YieldPrediction from "./components/YieldPrediction";
 import "./App.css";
 
 const NAV_ITEMS = [
@@ -12,6 +13,7 @@ const NAV_ITEMS = [
   { id: "lots", label: "Lot Explorer", icon: "⊞" },
   { id: "wafer", label: "Wafer Map", icon: "◎" },
   { id: "defects", label: "Defect Analysis", icon: "◆" },
+  { id: "prediction", label: "Yield Prediction", icon: "◉" },
 ];
 
 export default function App() {
@@ -79,6 +81,7 @@ export default function App() {
           {activePage === "lots" && <LotTable />}
           {activePage === "wafer" && <WaferMap />}
           {activePage === "defects" && <DefectAnalysis />}
+          {activePage === "prediction" && <YieldPrediction />}
         </div>
       </main>
     </div>
