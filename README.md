@@ -1,6 +1,6 @@
 # YieldVision · Semiconductor Analytics Dashboard
 
-A full-stack data visualization platform for semiconductor manufacturing analytics — built to demonstrate proficiency in React, Python FastAPI, data pipelines, and real-time monitoring (skills aligned with KLA's tech stack).
+A full-stack data visualization platform for semiconductor manufacturing analytics — built to demonstrate proficiency in React, Python FastAPI, data pipelines, and real-time monitoring .
 
 ## 🚀 Tech Stack
 
