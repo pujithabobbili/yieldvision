@@ -22,7 +22,7 @@ export default function YieldPrediction() {
   const runPrediction = async () => {
     setIsRunning(true);
     try {
-      const response = await fetch("http://localhost:8000/api/predict-sample");
+      const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/api/predict-sample`);
       if (!response.ok) {
         const error = await response.json();
         throw new Error(error.detail || "Prediction failed");
