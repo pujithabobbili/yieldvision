@@ -6,7 +6,7 @@ import {
   ScatterChart, Scatter, ZAxis
 } from "recharts";
 
-const COLORS = { "KLA-7000": "#38bdf8", "KLA-9200": "#34d399", "KLA-X1": "#fbbf24", "KLA-EDGE": "#a78bfa" };
+const COLORS = { "SECOM-A1": "#38bdf8", "SECOM-B2": "#34d399", "SECOM-C3": "#fbbf24", "SECOM-D4": "#a78bfa" };
 
 const TOOLTIP_STYLE = {
   backgroundColor: "#111827",
@@ -24,7 +24,7 @@ export default function YieldTrend() {
   const products = data?.products || [];
   const rawData = data?.data || [];
 
-  // Pivot: date → { date, KLA-7000: yield, ... }
+  // Pivot: date → { date, SECOM-A1: yield, ... }
   const pivoted = Object.values(
     rawData.reduce((acc, d) => {
       if (!acc[d.date]) acc[d.date] = { date: d.date.slice(5) };

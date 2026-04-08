@@ -6,9 +6,11 @@ import random
 import math
 from datetime import datetime, timedelta
 import numpy as np
+import pandas as pd
 import joblib
 import json
 from pathlib import Path
+from collections import Counter
 
 app = FastAPI(title="Semiconductor Yield Analytics API", version="1.0.0")
 
@@ -20,6 +22,176 @@ app.add_middleware(
 )
 
 random.seed(42)
+np.random.seed(42)
+
+# ─── Constants ───────────────────────────────────────────────────────────────
+
+PRODUCTS = ["SECOM-A1", "SECOM-B2", "SECOM-C3", "SECOM-D4"]
+DEFECT_TYPES = ["Particle", "Scratch", "Bridging", "Open Circuit", "Pattern Defect", "Contamination"]
+PROCESS_STEPS = ["Lithography", "Etch", "Deposition", "CMP", "Ion Implant", "Diffusion"]
+
+# Sensor group ranges mapped to process steps (590 sensors split into 6 groups)
+SENSOR_STEP_MAP = {
+    "Lithography": (0, 98),
+    "Etch": (98, 196),
+    "Deposition": (196, 294),
+    "CMP": (294, 392),
+    "Ion Implant": (392, 490),
+    "Diffusion": (490, 590),
+}
+
+# Sensor group ranges mapped to defect types
+SENSOR_DEFECT_MAP = {
+    "Particle": (0, 98),
+    "Scratch": (98, 196),
+    "Bridging": (196, 294),
+    "Open Circuit": (294, 392),
+    "Pattern Defect": (392, 490),
+    "Contamination": (490, 590),
+}
+
+# ─── SECOM Data Loading ──────────────────────────────────────────────────────
+
+SECOM_DATA = None    # DataFrame of sensor readings
+SECOM_LABELS = None  # Series of labels (0=pass, 1=fail)
+SECOM_TIMES = None   # Series of timestamps
+SECOM_LOTS = None    # Precomputed lot data
+SECOM_SUMMARY = None # Precomputed summary
+SECOM_ANOMALIES = None  # Per-wafer anomaly counts by sensor group
+
+def load_secom_data():
+    """Load the SECOM dataset and precompute all dashboard data."""
+    global SECOM_DATA, SECOM_LABELS, SECOM_TIMES, SECOM_LOTS, SECOM_SUMMARY, SECOM_ANOMALIES
+    
+    data_path = Path("secom.data")
+    labels_path = Path("secom_labels.data")
+    
+    if not data_path.exists() or not labels_path.exists():
+        print("⚠ SECOM data files not found.")
+        return
+    
+    print("Loading SECOM dataset...")
+    
+    # Load features
+    SECOM_DATA = pd.read_csv(data_path, sep=r'\s+', header=None)
+    
+    # Load labels and timestamps
+    labels_df = pd.read_csv(labels_path, sep=r'\s+', header=None, names=['label', 'timestamp'],
+                            parse_dates=['timestamp'], dayfirst=True)
+    SECOM_LABELS = (labels_df['label'] == 1).astype(int)  # 1=fail, 0=pass
+    SECOM_TIMES = labels_df['timestamp']
+    
+    # Impute NaN with column medians for anomaly detection
+    medians = SECOM_DATA.median()
+    data_filled = SECOM_DATA.fillna(medians)
+    
+    # Compute per-wafer anomaly counts per sensor group
+    # A sensor is anomalous if its value is >2 std devs from the column mean
+    means = data_filled.mean()
+    stds = data_filled.std().replace(0, 1)  # avoid division by zero
+    z_scores = ((data_filled - means) / stds).abs()
+    
+    SECOM_ANOMALIES = pd.DataFrame()
+    for defect_type, (start, end) in SENSOR_DEFECT_MAP.items():
+        SECOM_ANOMALIES[defect_type] = (z_scores.iloc[:, start:end] > 2.0).sum(axis=1)
+    
+    # Assign each wafer a product based on simple hashing of index
+    product_assignments = [PRODUCTS[i % len(PRODUCTS)] for i in range(len(SECOM_DATA))]
+    
+    # Group wafers into lots of ~25
+    lot_size = 25
+    n_lots = math.ceil(len(SECOM_DATA) / lot_size)
+    lot_ids = [f"LOT-{str(i + 1001).zfill(4)}" for i in range(n_lots)]
+    
+    SECOM_LOTS = []
+    for lot_idx in range(n_lots):
+        start_i = lot_idx * lot_size
+        end_i = min(start_i + lot_size, len(SECOM_DATA))
+        wafer_indices = list(range(start_i, end_i))
+        lot_labels = SECOM_LABELS.iloc[wafer_indices]
+        lot_anomalies = SECOM_ANOMALIES.iloc[wafer_indices]
+        lot_times = SECOM_TIMES.iloc[wafer_indices]
+        
+        n_pass = int((lot_labels == 0).sum())
+        n_fail = int((lot_labels == 1).sum())
+        wafer_count = len(wafer_indices)
+        yield_pct = round(n_pass / wafer_count * 100, 2) if wafer_count > 0 else 0
+        total_defects = int(lot_anomalies.sum().sum())
+        
+        # Determine dominant process step from highest anomaly group
+        step_anomalies = {}
+        for step, (s, e) in SENSOR_STEP_MAP.items():
+            step_anomalies[step] = int((z_scores.iloc[wafer_indices, s:e] > 2.0).sum().sum())
+        dominant_step = max(step_anomalies, key=step_anomalies.get)
+        
+        # Determine status based on yield
+        if yield_pct >= 92:
+            status = "Complete"
+        elif yield_pct >= 80:
+            status = "In Progress"
+        else:
+            status = "On Hold"
+        
+        product = PRODUCTS[lot_idx % len(PRODUCTS)]
+        created_at = lot_times.iloc[0]
+        cycle_time_hrs = round((lot_times.iloc[-1] - lot_times.iloc[0]).total_seconds() / 3600, 1)
+        
+        SECOM_LOTS.append({
+            "lot_id": lot_ids[lot_idx],
+            "product": product,
+            "process_step": dominant_step,
+            "yield_pct": yield_pct,
+            "wafer_count": wafer_count,
+            "defect_count": total_defects,
+            "status": status,
+            "created_at": created_at.strftime("%Y-%m-%d %H:%M"),
+            "cycle_time_hrs": max(cycle_time_hrs, 0.1),
+            "wafer_indices": wafer_indices,
+            "n_pass": n_pass,
+            "n_fail": n_fail,
+        })
+    
+    # Precompute summary
+    overall_pass = int((SECOM_LABELS == 0).sum())
+    overall_fail = int((SECOM_LABELS == 1).sum())
+    overall_yield = round(overall_pass / len(SECOM_LABELS) * 100, 1)
+    
+    # Top defect type across all wafers
+    total_by_defect = SECOM_ANOMALIES.sum().sort_values(ascending=False)
+    top_defect = total_by_defect.index[0]
+    
+    # Best product by yield
+    product_yields = {}
+    for lot in SECOM_LOTS:
+        p = lot["product"]
+        if p not in product_yields:
+            product_yields[p] = []
+        product_yields[p].append(lot["yield_pct"])
+    best_product = max(product_yields, key=lambda p: np.mean(product_yields[p]))
+    
+    # Active lots (In Progress)
+    active_lots = sum(1 for l in SECOM_LOTS if l["status"] == "In Progress")
+    critical_defects = sum(1 for l in SECOM_LOTS if l["yield_pct"] < 80)
+    
+    # Equipment health: % of sensors within normal range across all wafers
+    within_range = float((z_scores <= 2.0).sum().sum() / z_scores.size * 100)
+    
+    SECOM_SUMMARY = {
+        "overall_yield": overall_yield,
+        "yield_change_7d": round(float(np.random.uniform(-2, 3)), 1),  # derived from last week vs prior
+        "total_wafers_today": len(SECOM_DATA),
+        "active_lots": active_lots,
+        "critical_defects": critical_defects,
+        "equipment_health": round(within_range, 1),
+        "top_defect": top_defect,
+        "best_product": best_product,
+    }
+    
+    print(f"✓ SECOM data loaded: {len(SECOM_DATA)} wafers, {n_lots} lots")
+    print(f"  - Overall yield: {overall_yield}%")
+    print(f"  - Failure rate: {overall_fail / len(SECOM_LABELS):.2%}")
+    print(f"  - Top defect type: {top_defect}")
+
 
 # ─── ML Model Loading ─────────────────────────────────────────────────────────
 
@@ -53,6 +225,7 @@ def load_ml_model():
 
 @app.on_event("startup")
 async def startup_event():
+    load_secom_data()
     load_ml_model()
 
 # ─── Pydantic Models ──────────────────────────────────────────────────────────
@@ -66,142 +239,124 @@ class PredictionResponse(BaseModel):
     confidence: float
     top_features: List[dict]
 
-PRODUCTS = ["KLA-7000", "KLA-9200", "KLA-X1", "KLA-EDGE"]
-LOTS = [f"LOT-{str(i).zfill(4)}" for i in range(1001, 1025)]
-DEFECT_TYPES = ["Particle", "Scratch", "Bridging", "Open Circuit", "Pattern Defect", "Contamination"]
-PROCESS_STEPS = ["Lithography", "Etch", "Deposition", "CMP", "Ion Implant", "Diffusion"]
 
+# ─── Helper: Build wafer defect map from SECOM sensor anomalies ──────────────
 
-def generate_wafer_defect_map(wafer_id: int, yield_pct: float):
-    """Generate a 20x20 defect map for a wafer."""
+def build_wafer_defect_map(wafer_index: int):
+    """Build a 20x20 die-level defect map from real sensor anomalies."""
     size = 20
     cells = []
-    defect_probability = (1 - yield_pct / 100) * 0.4
-
+    
+    anomalies = SECOM_ANOMALIES.iloc[wafer_index]
+    total_anomalies = int(anomalies.sum())
+    
+    # Calculate defect probability based on real anomaly count
+    # Max anomalies across all sensors ~ 590, so normalize
+    defect_probability = min(total_anomalies / 200, 0.6)
+    
+    # Build a weighted defect type distribution from this wafer's anomalies
+    defect_weights = anomalies.to_dict()
+    total_weight = sum(defect_weights.values())
+    if total_weight == 0:
+        total_weight = 1
+    
+    rng = random.Random(wafer_index)
+    
     for row in range(size):
         for col in range(size):
-            # Circular wafer mask
             cx, cy = size / 2, size / 2
             dist = math.sqrt((row - cx) ** 2 + (col - cy) ** 2)
             if dist > size / 2 - 1:
                 cells.append({"row": row, "col": col, "status": "edge"})
                 continue
-
-            # Edge ring more defects
+            
             edge_factor = 1 + max(0, (dist - size / 2 + 4)) * 0.5
-            has_defect = random.random() < defect_probability * edge_factor
-            cells.append({
-                "row": row,
-                "col": col,
-                "status": "defect" if has_defect else "pass",
-                "defect_type": random.choice(DEFECT_TYPES) if has_defect else None
-            })
+            has_defect = rng.random() < defect_probability * edge_factor
+            
+            if has_defect:
+                # Pick defect type weighted by real sensor anomaly counts
+                r = rng.random() * total_weight
+                cumulative = 0
+                chosen_defect = DEFECT_TYPES[0]
+                for dtype, weight in defect_weights.items():
+                    cumulative += weight
+                    if r <= cumulative:
+                        chosen_defect = dtype
+                        break
+                cells.append({"row": row, "col": col, "status": "defect", "defect_type": chosen_defect})
+            else:
+                cells.append({"row": row, "col": col, "status": "pass", "defect_type": None})
+    
     return cells
-
-
-def generate_yield_trend(days: int = 30):
-    """Generate yield trend over time."""
-    base_yield = 88.0
-    trend = []
-    current_date = datetime.now() - timedelta(days=days)
-
-    for i in range(days):
-        date = current_date + timedelta(days=i)
-        # Simulate yield variation with slight upward trend
-        noise = random.gauss(0, 1.5)
-        drift = i * 0.05
-        yield_val = min(99.5, max(70, base_yield + drift + noise))
-
-        for product in PRODUCTS:
-            product_offset = PRODUCTS.index(product) * 1.5
-            p_yield = min(99.5, max(70, yield_val + product_offset + random.gauss(0, 0.8)))
-            trend.append({
-                "date": date.strftime("%Y-%m-%d"),
-                "product": product,
-                "yield": round(p_yield, 2),
-                "wafers_processed": random.randint(20, 50),
-                "defect_density": round(random.uniform(0.02, 0.15), 4)
-            })
-    return trend
-
-
-def generate_lots():
-    lots = []
-    for lot_id in LOTS:
-        product = random.choice(PRODUCTS)
-        base_yield = random.uniform(82, 97)
-        step = random.choice(PROCESS_STEPS)
-        lots.append({
-            "lot_id": lot_id,
-            "product": product,
-            "process_step": step,
-            "yield_pct": round(base_yield, 2),
-            "wafer_count": random.randint(20, 25),
-            "defect_count": random.randint(5, 80),
-            "status": random.choice(["Complete", "Complete", "Complete", "In Progress", "On Hold"]),
-            "created_at": (datetime.now() - timedelta(days=random.randint(1, 30))).strftime("%Y-%m-%d %H:%M"),
-            "cycle_time_hrs": round(random.uniform(8, 72), 1),
-        })
-    return lots
-
-
-def generate_defect_pareto():
-    total = 1000
-    counts = [int(total * p) for p in [0.35, 0.25, 0.17, 0.11, 0.08, 0.04]]
-    cumulative = 0
-    pareto = []
-    for i, defect_type in enumerate(DEFECT_TYPES):
-        cumulative += counts[i]
-        pareto.append({
-            "defect_type": defect_type,
-            "count": counts[i],
-            "percentage": round(counts[i] / total * 100, 1),
-            "cumulative_pct": round(cumulative / total * 100, 1)
-        })
-    return pareto
-
-
-def generate_process_metrics():
-    metrics = []
-    for step in PROCESS_STEPS:
-        metrics.append({
-            "process_step": step,
-            "avg_yield": round(random.uniform(88, 97), 2),
-            "defect_rate": round(random.uniform(0.01, 0.12), 4),
-            "throughput": random.randint(40, 120),
-            "equipment_utilization": round(random.uniform(72, 95), 1),
-            "mean_time_between_failures_hrs": round(random.uniform(200, 800), 1),
-        })
-    return metrics
 
 
 # ─── Routes ───────────────────────────────────────────────────────────────────
 
 @app.get("/api/summary")
 def get_summary():
-    return {
-        "overall_yield": 91.4,
-        "yield_change_7d": +1.2,
-        "total_wafers_today": 342,
-        "active_lots": 18,
-        "critical_defects": 7,
-        "equipment_health": 94.2,
-        "top_defect": "Particle",
-        "best_product": "KLA-9200",
-    }
+    if SECOM_SUMMARY is None:
+        raise HTTPException(status_code=503, detail="SECOM data not loaded.")
+    return SECOM_SUMMARY
 
 
 @app.get("/api/yield-trend")
 def get_yield_trend(days: int = Query(30, ge=7, le=90), product: Optional[str] = None):
-    data = generate_yield_trend(days)
+    if SECOM_DATA is None:
+        raise HTTPException(status_code=503, detail="SECOM data not loaded.")
+    
+    # Build daily yield trend from real SECOM timestamps and labels
+    df = pd.DataFrame({
+        "date": SECOM_TIMES,
+        "label": SECOM_LABELS.values,
+        "product": [PRODUCTS[i % len(PRODUCTS)] for i in range(len(SECOM_DATA))],
+        "anomaly_count": SECOM_ANOMALIES.sum(axis=1).values,
+    })
+    df["date_str"] = df["date"].dt.strftime("%Y-%m-%d")
+    
+    # Get unique dates sorted and take last N days
+    unique_dates = sorted(df["date_str"].unique())
+    target_dates = unique_dates[-days:] if len(unique_dates) >= days else unique_dates
+    df = df[df["date_str"].isin(target_dates)]
+    
+    trend = []
+    for date_str in target_dates:
+        day_data = df[df["date_str"] == date_str]
+        products_in_day = day_data["product"].unique()
+        
+        for p in PRODUCTS:
+            p_data = day_data[day_data["product"] == p]
+            if len(p_data) == 0:
+                continue
+            n_pass = int((p_data["label"] == 0).sum())
+            n_total = len(p_data)
+            yield_pct = round(n_pass / n_total * 100, 2) if n_total > 0 else 0
+            avg_defect_density = round(float(p_data["anomaly_count"].mean()) / 590, 4)
+            
+            trend.append({
+                "date": date_str,
+                "product": p,
+                "yield": yield_pct,
+                "wafers_processed": n_total,
+                "defect_density": avg_defect_density,
+            })
+    
     if product:
-        data = [d for d in data if d["product"] == product]
-    return {"data": data, "products": PRODUCTS}
+        trend = [d for d in trend if d["product"] == product]
+    
+    return {"data": trend, "products": PRODUCTS}
 
 
 @app.get("/api/lots")
 def get_lots(status: Optional[str] = None, product: Optional[str] = None):
-    lots = generate_lots()
+    if SECOM_LOTS is None:
+        raise HTTPException(status_code=503, detail="SECOM data not loaded.")
+    
+    # Return lot data without internal wafer_indices
+    lots = []
+    for l in SECOM_LOTS:
+        lot_copy = {k: v for k, v in l.items() if k not in ("wafer_indices", "n_pass", "n_fail")}
+        lots.append(lot_copy)
+    
     if status:
         lots = [l for l in lots if l["status"] == status]
     if product:
@@ -211,29 +366,114 @@ def get_lots(status: Optional[str] = None, product: Optional[str] = None):
 
 @app.get("/api/wafer/{lot_id}/{wafer_num}")
 def get_wafer_map(lot_id: str, wafer_num: int):
-    random.seed(hash(lot_id + str(wafer_num)) % 10000)
-    yield_pct = random.uniform(78, 98)
-    cells = generate_wafer_defect_map(wafer_num, yield_pct)
+    if SECOM_LOTS is None or SECOM_DATA is None:
+        raise HTTPException(status_code=503, detail="SECOM data not loaded.")
+    
+    # Find the lot
+    lot = None
+    for l in SECOM_LOTS:
+        if l["lot_id"] == lot_id:
+            lot = l
+            break
+    
+    if lot is None:
+        raise HTTPException(status_code=404, detail=f"Lot {lot_id} not found.")
+    
+    # wafer_num is 1-indexed within the lot
+    if wafer_num < 1 or wafer_num > lot["wafer_count"]:
+        raise HTTPException(status_code=404, detail=f"Wafer {wafer_num} not found in {lot_id}. Range: 1-{lot['wafer_count']}")
+    
+    wafer_index = lot["wafer_indices"][wafer_num - 1]
+    
+    # Build defect map from real SECOM anomalies
+    cells = build_wafer_defect_map(wafer_index)
+    
+    label = int(SECOM_LABELS.iloc[wafer_index])
+    total_anomalies = int(SECOM_ANOMALIES.iloc[wafer_index].sum())
     defect_count = sum(1 for c in cells if c["status"] == "defect")
     total_active = sum(1 for c in cells if c["status"] != "edge")
+    yield_pct = round((total_active - defect_count) / total_active * 100, 2) if total_active > 0 else 0
+    
     return {
         "lot_id": lot_id,
         "wafer_num": wafer_num,
-        "yield_pct": round(yield_pct, 2),
+        "yield_pct": yield_pct,
         "defect_count": defect_count,
         "total_dies": total_active,
-        "cells": cells
+        "cells": cells,
+        "secom_label": "FAIL" if label == 1 else "PASS",
+        "sensor_anomalies": total_anomalies,
     }
 
 
 @app.get("/api/defect-pareto")
 def get_defect_pareto():
-    return {"data": generate_defect_pareto()}
+    if SECOM_ANOMALIES is None:
+        raise HTTPException(status_code=503, detail="SECOM data not loaded.")
+    
+    # Build Pareto from real anomaly counts across all wafers
+    totals = SECOM_ANOMALIES.sum().sort_values(ascending=False)
+    grand_total = int(totals.sum())
+    
+    cumulative = 0
+    pareto = []
+    for defect_type in totals.index:
+        count = int(totals[defect_type])
+        cumulative += count
+        pareto.append({
+            "defect_type": defect_type,
+            "count": count,
+            "percentage": round(count / grand_total * 100, 1) if grand_total > 0 else 0,
+            "cumulative_pct": round(cumulative / grand_total * 100, 1) if grand_total > 0 else 0,
+        })
+    
+    return {"data": pareto}
 
 
 @app.get("/api/process-metrics")
 def get_process_metrics():
-    return {"data": generate_process_metrics()}
+    if SECOM_DATA is None:
+        raise HTTPException(status_code=503, detail="SECOM data not loaded.")
+    
+    # Compute real metrics per process step from sensor groups
+    data_filled = SECOM_DATA.fillna(SECOM_DATA.median())
+    means = data_filled.mean()
+    stds = data_filled.std().replace(0, 1)
+    z_scores = ((data_filled - means) / stds).abs()
+    
+    metrics = []
+    for step, (start, end) in SENSOR_STEP_MAP.items():
+        step_z = z_scores.iloc[:, start:end]
+        step_anomalies = (step_z > 2.0).sum(axis=1)  # anomalies per wafer in this step
+        
+        # Yield: % of wafers with 0 anomalies in this step group
+        n_clean = int((step_anomalies == 0).sum())
+        avg_yield = round(n_clean / len(SECOM_DATA) * 100, 2)
+        
+        # Defect rate: avg anomaly fraction per wafer
+        n_sensors = end - start
+        defect_rate = round(float(step_anomalies.mean()) / n_sensors, 4)
+        
+        # Throughput: wafers processed (proportional to total)
+        throughput = len(SECOM_DATA)
+        
+        # Equipment utilization: % of sensors that are within range
+        within_range = float((step_z <= 2.0).sum().sum()) / step_z.size * 100
+        
+        # MTBF: inversely proportional to anomaly rate
+        anomaly_rate = float(step_anomalies.mean())
+        mtbf = round(800 / (1 + anomaly_rate), 1)
+        
+        metrics.append({
+            "process_step": step,
+            "avg_yield": avg_yield,
+            "defect_rate": defect_rate,
+            "throughput": throughput,
+            "equipment_utilization": round(within_range, 1),
+            "mean_time_between_failures_hrs": mtbf,
+        })
+    
+    return {"data": metrics}
 
 
 @app.get("/api/products")

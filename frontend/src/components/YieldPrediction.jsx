@@ -39,15 +39,15 @@ export default function YieldPrediction() {
 
   const rocData = metrics?.roc_curve
     ? metrics.roc_curve.fpr.map((fpr, i) => ({
-        fpr: (fpr * 100).toFixed(2),
-        tpr: (metrics.roc_curve.tpr[i] * 100).toFixed(2),
+        fpr: parseFloat((fpr * 100).toFixed(2)),
+        tpr: parseFloat((metrics.roc_curve.tpr[i] * 100).toFixed(2)),
       }))
     : [];
 
   const prData = metrics?.pr_curve
     ? metrics.pr_curve.recall.map((recall, i) => ({
-        recall: (recall * 100).toFixed(2),
-        precision: (metrics.pr_curve.precision[i] * 100).toFixed(2),
+        recall: parseFloat((recall * 100).toFixed(2)),
+        precision: parseFloat((metrics.pr_curve.precision[i] * 100).toFixed(2)),
       }))
     : [];
 
@@ -160,15 +160,18 @@ export default function YieldPrediction() {
             <div className="card">
               <h3 style={{ marginBottom: 16 }}>ROC Curve</h3>
               <ResponsiveContainer width="100%" height={300}>
-                <LineChart data={rocData} margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
+                <LineChart data={rocData} margin={{ top: 5, right: 20, bottom: 20, left: 10 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="rgba(99,179,237,0.1)" />
                   <XAxis
                     dataKey="fpr"
+                    type="number"
+                    domain={[0, 100]}
                     stroke="var(--text-secondary)"
                     fontSize={12}
-                    label={{ value: "False Positive Rate (%)", position: "insideBottom", offset: -5, fill: "var(--text-secondary)" }}
+                    label={{ value: "False Positive Rate (%)", position: "insideBottom", offset: -10, fill: "var(--text-secondary)" }}
                   />
                   <YAxis
+                    domain={[0, 100]}
                     stroke="var(--text-secondary)"
                     fontSize={12}
                     label={{ value: "True Positive Rate (%)", angle: -90, position: "insideLeft", fill: "var(--text-secondary)" }}
@@ -205,15 +208,18 @@ export default function YieldPrediction() {
             <div className="card">
               <h3 style={{ marginBottom: 16 }}>Precision-Recall Curve</h3>
               <ResponsiveContainer width="100%" height={300}>
-                <LineChart data={prData} margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
+                <LineChart data={prData} margin={{ top: 5, right: 20, bottom: 20, left: 10 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="rgba(99,179,237,0.1)" />
                   <XAxis
                     dataKey="recall"
+                    type="number"
+                    domain={[0, 100]}
                     stroke="var(--text-secondary)"
                     fontSize={12}
-                    label={{ value: "Recall (%)", position: "insideBottom", offset: -5, fill: "var(--text-secondary)" }}
+                    label={{ value: "Recall (%)", position: "insideBottom", offset: -10, fill: "var(--text-secondary)" }}
                   />
                   <YAxis
+                    domain={[0, 100]}
                     stroke="var(--text-secondary)"
                     fontSize={12}
                     label={{ value: "Precision (%)", angle: -90, position: "insideLeft", fill: "var(--text-secondary)" }}

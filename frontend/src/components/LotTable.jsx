@@ -51,10 +51,10 @@ export default function LotTable() {
         </select>
         <select value={productFilter || ""} onChange={(e) => setProductFilter(e.target.value || null)}>
           <option value="">All Products</option>
-          <option>KLA-7000</option>
-          <option>KLA-9200</option>
-          <option>KLA-X1</option>
-          <option>KLA-EDGE</option>
+          <option>SECOM-A1</option>
+          <option>SECOM-B2</option>
+          <option>SECOM-C3</option>
+          <option>SECOM-D4</option>
         </select>
         <span style={{ marginLeft: "auto", fontSize: 12, color: "var(--text-dim)" }}>
           {lots.length} lots
