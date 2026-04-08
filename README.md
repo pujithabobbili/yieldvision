@@ -1,6 +1,10 @@
-# YieldVision · Semiconductor Analytics Dashboard
+# YieldVision · Semiconductor Analytics + Yield Prediction
 
-A full-stack data visualization platform for semiconductor manufacturing analytics — built to demonstrate proficiency in React, Python FastAPI, data pipelines, and real-time monitoring (skills aligned with KLA's tech stack).
+A full-stack semiconductor manufacturing analytics platform with a live ML-powered yield failure prediction model — built with React, Python FastAPI, and scikit-learn, deployed on Vercel + Render.
+
+🌐 **[Live Demo](https://yieldvision.vercel.app)** · 💻 **[GitHub](https://github.com/pujithabobbili/yieldvision)**
+
+---
 
 ## 🚀 Tech Stack
 
@@ -8,14 +12,19 @@ A full-stack data visualization platform for semiconductor manufacturing analyti
 |-------|-----------|
 | Frontend | React 18 + Vite + Recharts |
 | Backend | Python FastAPI (REST API) |
-| Data Layer | Simulated semiconductor fab data |
+| ML Model | scikit-learn (GBM + SMOTE + Platt calibration) |
+| Data | Simulated fab data + SECOM dataset (UCI ML Repository) |
 | Charts | Recharts (LineChart, BarChart, RadarChart, AreaChart, ComposedChart) |
-| Styling | Custom CSS with CSS variables (dark industrial theme) |
+| Styling | Custom CSS variables (dark industrial theme) |
+| Deployment | Vercel (frontend) + Render (backend) |
+| Monitoring | UptimeRobot (99%+ uptime via health check pings) |
 
-## 📊 Features
+---
+
+## 📊 Features — 6 Pages
 
 ### 1. Overview Dashboard
-- 6 real-time KPI cards (Overall Yield, Wafers Today, Active Lots, Critical Defects, Equipment Health)
+- 6 live KPI cards (Overall Yield, Wafers Today, Active Lots, Critical Defects, Equipment Health)
 - 14-day aggregate yield trend line chart
 - Process step performance bar chart
 - Multi-metric radar chart (yield vs. equipment utilization)
@@ -27,105 +36,28 @@ A full-stack data visualization platform for semiconductor manufacturing analyti
 - Product filter for focused analysis
 
 ### 3. Lot Explorer
-- Full sortable, filterable data table of production lots
+- Sortable, filterable table of production lots
 - Filter by status (Complete / In Progress / On Hold) and product
-- Lot ID search
-- Color-coded yield thresholds (green ≥92%, amber ≥85%, red <85%)
-- Defect count highlighting
+- Lot ID search with color-coded yield thresholds (green ≥92%, amber ≥85%, red <85%)
 
 ### 4. Wafer Defect Map
 - Interactive 20×20 die-level defect map per wafer
 - 6 defect types with unique colors (Particle, Scratch, Bridging, Open Circuit, Pattern Defect, Contamination)
+- Edge effect modeled — defect probability increases with distance from wafer center
 - Hover tooltip showing defect type and coordinates
-- Defect breakdown bar chart per wafer
-- Select by Lot ID and Wafer Number
 
 ### 5. Defect Analysis
-- Pareto chart (80/20 rule) with cumulative % line
+- Pareto chart (80/20 rule) with cumulative % overlay
 - Equipment utilization horizontal bar chart by process step
-- Process metrics table: throughput, defect rate, MTBF, yield bar
+- Process metrics table: throughput, defect rate, MTBF, yield
 
----
-
-## 🛠 Running Locally
-
-### Prerequisites
-- Python 3.9+
-- Node.js 18+
-
-### Backend (FastAPI)
-```bash
-cd backend
-pip install -r requirements.txt
-uvicorn main:app --reload --port 8000
-```
-API will be live at `http://localhost:8000`
-Swagger docs: `http://localhost:8000/docs`
-
-### Frontend (React)
-```bash
-cd frontend
-npm install
-npm run dev
-```
-App will be live at `http://localhost:3000`
-
----
-
-## ☁️ Deployment Options
-
-### Option A: Render (Free, Recommended for Demo)
-
-**Backend:**
-1. Push to GitHub
-2. Create new Web Service on [render.com](https://render.com)
-3. Set Build Command: `pip install -r requirements.txt`
-4. Set Start Command: `uvicorn main:app --host 0.0.0.0 --port $PORT`
-
-**Frontend:**
-1. Create new Static Site on Render
-2. Build Command: `npm install && npm run build`
-3. Publish Directory: `dist`
-4. Set env var: `VITE_API_URL=https://your-backend.onrender.com`
-
-### Option B: Railway
-```bash
-# Install Railway CLI
-npm install -g @railway/cli
-railway login
-railway up
-```
-
-### Option C: Vercel (Frontend) + Railway (Backend)
-- Frontend → Vercel (zero config for Vite/React)
-- Backend → Railway (auto-detects Python/FastAPI)
-
----
-
-## 📁 Project Structure
-
-```
-semiconductor-dashboard/
-├── backend/
-│   ├── main.py          # FastAPI app + all endpoints
-│   └── requirements.txt
-└── frontend/
-    ├── src/
-    │   ├── components/
-    │   │   ├── Overview.jsx      # KPI + summary charts
-    │   │   ├── YieldTrend.jsx    # Time-series analysis
-    │   │   ├── LotTable.jsx      # Sortable data table
-    │   │   ├── WaferMap.jsx      # Interactive die map
-    │   │   └── DefectAnalysis.jsx # Pareto + process metrics
-    │   ├── hooks/
-    │   │   └── useApi.js         # Data fetching hook
-    │   ├── App.jsx               # Navigation + layout
-    │   ├── App.css               # Design system
-    │   └── main.jsx
-    ├── index.html
-    ├── vite.config.js
-    └── package.json
-```
+### 6. Yield Failure Prediction (ML)
+- Trained on SECOM dataset (1,253 samples, 314 features, 6.62% failure rate)
+- Pipeline: variance filtering → SMOTE → Gradient Boosting + Platt calibration
+- **ROC-AUC: 0.69 · PR-AUC: 0.15** (2× gain over majority-class baseline)
+- Live PASS/FAIL prediction with failure probability + confidence score
+- Top 10 contributing sensors shown as interactive bar chart
+- ROC Curve and Precision-Recall Curve rendered from real model metrics
 
 ---
 
@@ -139,16 +71,96 @@ semiconductor-dashboard/
 | `GET /api/wafer/{lot_id}/{wafer_num}` | Wafer defect map |
 | `GET /api/defect-pareto` | Defect type breakdown |
 | `GET /api/process-metrics` | Per-step process stats |
+| `GET /api/predict-sample` | Run live yield prediction on random wafer |
+| `GET /api/model-metrics` | ROC/PR curve data + model info |
 | `GET /docs` | Swagger UI |
+
+---
+
+## 🛠 Running Locally
+
+### Prerequisites
+- Python 3.11+
+- Node.js 18+
+
+### Backend (FastAPI)
+```bash
+cd backend
+pip install -r requirements.txt
+python train_model.py        # Train and save the ML model (run once)
+uvicorn main:app --reload --port 8000
+```
+API live at `http://localhost:8000` · Swagger docs at `http://localhost:8000/docs`
+
+### Frontend (React)
+```bash
+cd frontend
+npm install
+npm run dev
+```
+App live at `http://localhost:3000`
+
+---
+
+## ☁️ Deployment
+
+| Service | Platform | URL |
+|---------|----------|-----|
+| Frontend | Vercel | https://yieldvision.vercel.app |
+| Backend API | Render (Python 3.11) | https://yieldvision-api.onrender.com |
+
+**Environment variable required on Vercel:**
+```
+VITE_API_URL=https://yieldvision-api.onrender.com
+```
+
+**Render start command:**
+```
+uvicorn main:app --host 0.0.0.0 --port $PORT
+```
+
+---
+
+## 📁 Project Structure
+
+```
+yieldvision/
+├── backend/
+│   ├── main.py                  # FastAPI app + all endpoints
+│   ├── train_model.py           # ML pipeline training script
+│   ├── yield_model.pkl          # Trained GBM model (Platt calibrated)
+│   ├── selected_features.json   # Feature indices after variance filtering
+│   ├── model_metrics.json       # ROC/PR curve data
+│   ├── secom.data               # SECOM dataset (UCI ML Repository)
+│   ├── secom_labels.data        # SECOM labels
+│   └── requirements.txt
+└── frontend/
+    ├── src/
+    │   ├── components/
+    │   │   ├── Overview.jsx         # KPI + summary charts
+    │   │   ├── YieldTrend.jsx       # Time-series analysis
+    │   │   ├── LotTable.jsx         # Sortable data table
+    │   │   ├── WaferMap.jsx         # Interactive die map
+    │   │   ├── DefectAnalysis.jsx   # Pareto + process metrics
+    │   │   └── YieldPrediction.jsx  # ML prediction page
+    │   ├── hooks/
+    │   │   └── useApi.js            # Data fetching hook
+    │   ├── App.jsx                  # Navigation + layout
+    │   ├── App.css                  # Design system
+    │   └── main.jsx
+    ├── index.html
+    ├── vite.config.js
+    └── package.json
+```
 
 ---
 
 ## 💡 Why This Project
 
-This dashboard demonstrates skills directly relevant to KLA's engineering work:
+Built to demonstrate skills directly relevant to semiconductor equipment engineering:
 
-- **Data ingestion & pipelines** — FastAPI backend simulates a data pipeline ingesting wafer inspection results
-- **React frontend** — Component-based UI with real-time data fetching, filtering, and sorting
-- **Analytics/visualization** — Pareto analysis, defect mapping, yield trending (core to KLA's product)
-- **Elastic APM patterns** — The architecture mirrors how Elastic APM works: ingest → transform → visualize
-- **Instrumenting code** — Custom `useApi` hook with error handling, loading states, and re-fetch support
+- **Data pipelines** — FastAPI backend simulates a real fab inspection data pipeline with transformation and aggregation
+- **React frontend** — Component-based UI with real-time fetching, filtering, sorting, and custom hooks
+- **ML engineering** — End-to-end model pipeline: preprocessing → class balancing → training → calibration → deployment
+- **Elastic APM patterns** — Architecture mirrors APM: ingest → transform → visualize
+- **Domain knowledge** — Edge effect modeled in wafer map, Pareto analysis for defect prioritization, yield metrics aligned with real fab KPIs
